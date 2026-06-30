@@ -1,0 +1,8 @@
+.DS_Store
+._*
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+submission.zip
