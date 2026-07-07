@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
+from medical_image_ml.error_analysis import run_error_analysis
 from medical_image_ml.evaluate import (
     evaluate_classification,
     make_classification_report,
@@ -16,6 +17,7 @@ from medical_image_ml.evaluate import (
     plot_sample_images,
     plot_training_history,
 )
+from medical_image_ml.gradcam import plot_gradcam_examples
 from medical_image_ml.models import build_cnn, build_mlp, build_random_forest
 from medical_image_ml.paths import ensure_dir, project_path, resolve_data_dir, resolve_output_dir, save_text
 from medical_image_ml.preprocessing import prepare_dataset
@@ -41,6 +43,10 @@ from medical_image_ml.tuning import (
 
 def _figures_dir(output_dir: Path) -> Path:
     return ensure_dir(output_dir / "figures")
+
+
+def _count_params(model) -> int:
+    return int(model.count_params())
 
 
 def _save_metrics(output_dir: Path, model_name: str, metrics: dict) -> None:
@@ -77,7 +83,7 @@ def train_rf(
     quick: bool = False,
     tune: bool = True,
     retune_rf: bool = False,
-) -> dict:
+) -> tuple[dict, np.ndarray]:
     start = time.time()
     cache_file = rf_cache_path(output_dir)
 
@@ -110,6 +116,9 @@ def train_rf(
     metrics["params"] = params
     metrics.update(metrics_extra)
     metrics["train_seconds"] = round(time.time() - start, 2)
+    metrics["param_count"] = sum(
+        tree.tree_.node_count for tree in model.estimators_
+    )
 
     plot_confusion_matrix(
         dataset.y_test,
@@ -120,7 +129,7 @@ def train_rf(
     report = make_classification_report(dataset.y_test, y_pred)
     save_text(output_dir / "reports" / "rf_classification_report.txt", report)
     _save_metrics(output_dir, "rf", metrics)
-    return metrics
+    return metrics, y_pred
 
 
 def train_mlp(
@@ -128,7 +137,7 @@ def train_mlp(
     output_dir: Path,
     config: TrainingConfig,
     quick: bool = False,
-) -> dict:
+) -> tuple[dict, np.ndarray]:
     start = time.time()
     params = BEST_MLP_PARAMS.copy()
     if quick:
@@ -164,6 +173,7 @@ def train_mlp(
     metrics = evaluate_classification(dataset.y_test, y_pred, title="MLP")
     metrics["params"] = params
     metrics["train_seconds"] = round(time.time() - start, 2)
+    metrics["param_count"] = _count_params(final_model)
 
     plot_training_history(
         history,
@@ -179,7 +189,7 @@ def train_mlp(
     report = make_classification_report(dataset.y_test, y_pred)
     save_text(output_dir / "reports" / "mlp_classification_report.txt", report)
     _save_metrics(output_dir, "mlp", metrics)
-    return metrics
+    return metrics, y_pred
 
 
 def train_cnn(
@@ -188,7 +198,8 @@ def train_cnn(
     config: TrainingConfig,
     quick: bool = False,
     tune: bool = False,
-) -> dict:
+    run_gradcam: bool = True,
+) -> tuple[dict, np.ndarray]:
     start = time.time()
     input_shape = dataset.X_train.shape[1:]
 
@@ -260,6 +271,7 @@ def train_cnn(
     metrics = evaluate_classification(dataset.y_test, y_pred, title="CNN")
     metrics["params"] = params
     metrics["train_seconds"] = round(time.time() - start, 2)
+    metrics["param_count"] = _count_params(final_model)
 
     plot_training_history(
         history,
@@ -279,7 +291,22 @@ def train_cnn(
     model_path = ensure_dir(output_dir / "models") / "cnn.keras"
     final_model.save(model_path)
     metrics["model_path"] = str(model_path)
-    return metrics
+
+    if run_gradcam:
+        try:
+            plot_gradcam_examples(
+                final_model,
+                dataset.X_test,
+                dataset.y_test,
+                y_pred,
+                n_examples=4,
+                output_path=_figures_dir(output_dir) / "gradcam_cnn.png",
+                title="CNN Grad-CAM",
+            )
+        except Exception as exc:
+            print(f"Warning: CNN Grad-CAM skipped ({exc})")
+
+    return metrics, y_pred
 
 
 def _sync_showcase_assets(output_dir: Path) -> None:
@@ -296,6 +323,9 @@ def _sync_showcase_assets(output_dir: Path) -> None:
         "confusion_matrix_cnn.png",
         "history_mlp.png",
         "history_cnn.png",
+        "gradcam_cnn.png",
+        "error_misclassified_cnn.png",
+        "error_analysis_rf_cnn.png",
     ]:
         src = fig_dir / name
         if src.exists():
@@ -318,6 +348,22 @@ def generate_dataset_figures(dataset, output_dir: Path) -> None:
         src = fig_dir / name
         if src.exists():
             (docs_assets / name).write_bytes(src.read_bytes())
+
+
+def _save_predictions(output_dir: Path, model_name: str, y_pred: np.ndarray) -> None:
+    pred_dir = ensure_dir(output_dir / "predictions")
+    np.save(pred_dir / f"{model_name}_y_pred.npy", y_pred)
+
+
+def _load_cached_predictions(output_dir: Path) -> dict[str, np.ndarray]:
+    pred_dir = output_dir / "predictions"
+    predictions: dict[str, np.ndarray] = {}
+    if not pred_dir.exists():
+        return predictions
+    for path in pred_dir.glob("*_y_pred.npy"):
+        name = path.name.replace("_y_pred.npy", "")
+        predictions[name] = np.load(path)
+    return predictions
 
 
 def run_training(args: argparse.Namespace) -> list[dict]:
@@ -383,28 +429,45 @@ def run_training(args: argparse.Namespace) -> list[dict]:
         "cnn": run_cnn,
     }
 
-    models = ["rf", "mlp", "cnn"] if args.model == "all" else [args.model]
+    if args.model == "all":
+        models = ["rf", "mlp", "cnn"]
+    elif args.model == "portfolio":
+        models = ["rf", "cnn"]
+    else:
+        models = [args.model]
+
     results: list[dict] = []
+    predictions: dict[str, np.ndarray] = {}
 
     for name in models:
         print(f"\n=== Training {name.upper()} ===")
-        metrics = runners[name]()
+        metrics, y_pred = runners[name]()
+        predictions[name] = y_pred
+        _save_predictions(output_dir, name, y_pred)
         row = {
             "model": name.upper(),
             "accuracy": metrics["accuracy"],
             "f1_weighted": metrics["f1_weighted"],
             "train_seconds": metrics["train_seconds"],
         }
+        if "param_count" in metrics:
+            row["param_count"] = metrics["param_count"]
         results.append(row)
         print(
             f"{name.upper()} test accuracy: {metrics['accuracy']:.4f} "
-            f"(trained in {metrics['train_seconds']}s)"
+            f"(trained in {metrics['train_seconds']}s, "
+            f"params={metrics.get('param_count', 'n/a')})"
         )
 
     if len(results) > 1:
         comparison_path = _figures_dir(output_dir) / "model_comparison.png"
         plot_model_comparison(results, output_path=comparison_path)
         save_text(output_dir / "metrics" / "comparison.json", json.dumps(results, indent=2))
+
+    if "cnn" in predictions or "rf" in predictions:
+        cached_preds = _load_cached_predictions(output_dir)
+        merged_preds = {**cached_preds, **predictions}
+        run_error_analysis(dataset.X_test, dataset.y_test, merged_preds, output_dir)
 
     _sync_showcase_assets(output_dir)
     return results
@@ -416,9 +479,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        choices=["rf", "mlp", "cnn", "all"],
+        choices=["rf", "mlp", "cnn", "all", "portfolio"],
         default="all",
-        help="Model to train.",
+        help=(
+            "Model to train. 'all' = Phase 1 baseline (rf, mlp, cnn). "
+            "'portfolio' = rf + cnn with Grad-CAM and error analysis."
+        ),
     )
     parser.add_argument("--data-dir", default=None, help="Path to Assignment2Data directory.")
     parser.add_argument("--output-dir", default=None, help="Directory for artifacts.")

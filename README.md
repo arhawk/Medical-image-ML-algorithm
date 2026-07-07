@@ -1,6 +1,6 @@
 # Medical Image ML Algorithm
 
-Histopathology image classification project comparing **Random Forest**, **MLP**, and **CNN** models on a 9-class dataset (28×28 RGB).
+Histopathology image classification project comparing **Random Forest**, **MLP**, and **CNN** on a 9-class dataset (28×28 RGB).
 
 > **Portfolio presentation:** [docs/SHOWCASE.md](docs/SHOWCASE.md)
 
@@ -60,7 +60,7 @@ If `python3 --version` shows **3.13 or 3.14**, do **not** use that interpreter f
 Optional: `medimg-train --model cnn --tune` runs keras-tuner search (not used for reported baseline numbers).
 
 ```bash
-# Train all models (quick smoke test)
+# Train all Phase 1 models (quick smoke test)
 medimg-train --model all --quick
 
 # Full training (MLP 30 epochs, CNN 40 epochs, final fit on train+val)
@@ -68,8 +68,11 @@ medimg-train --model all
 
 # Individual models
 medimg-train --model rf
-medimg-train --model mlp
+medimg-train --model mlp --cpu-only
 medimg-train --model cnn
+
+# Portfolio: RF + CNN with Grad-CAM and error analysis
+medimg-train --model portfolio
 
 # Skip RF GridSearch; use fixed params above
 medimg-train --model rf --no-tune
@@ -81,7 +84,7 @@ medimg-train --model cnn --tune
 ./scripts/run_all.sh --quick
 ```
 
-Outputs (metrics, reports, figures) are written to `outputs/`. Key figures are also copied to `docs/assets/` for the showcase page.
+Outputs (metrics, reports, figures) are written to `outputs/`. Key figures (including Grad-CAM and error analysis) are also copied to `docs/assets/` for the showcase page.
 
 RF GridSearch results are cached at `outputs/tuning/rf/best_params.json` after the first run. Subsequent `medimg-train --model rf` calls reuse the cache. Pass `--retune-rf` to force a new GridSearch.
 

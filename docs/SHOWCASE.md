@@ -1,12 +1,14 @@
 # Medical Image Classification — Portfolio Showcase
 
-> **Histopathology image classification** comparing Random Forest, MLP, and CNN on a 9-class medical imaging dataset. Best model (CNN) achieves **90.1% test accuracy** (CLI baseline: RF GridSearch, MLP `--cpu-only`, CNN on GPU).
+> **Personal ML case study inspired by coursework** — histopathology image classification comparing Random Forest, MLP, and hand-crafted CNN on a 9-class medical imaging dataset. I refactored the original notebook into a reproducible Python package with CLI, cached tuning, Grad-CAM interpretability, and structured error analysis. Best hand-crafted CNN achieves **90.1% test accuracy** (CLI baseline: RF GridSearch, MLP `--cpu-only`, CNN on GPU).
 
 | Model | Test Accuracy | Training Cost | Best Hyperparameters |
 |-------|---------------|---------------|----------------------|
 | Random Forest (PCA) | 65.7% | Low | `n_estimators=250`, `max_depth=20`, `max_features=sqrt` (GridSearch default; `--no-tune` fallback) |
 | MLP (PCA) | 69.3% | Medium | `units=256`, `relu`, `dropout=0.2`, `lr=0.1` |
-| **CNN** | **90.1%** | High | `filters=(32,64)`, `kernels=(3,5)`, `dense=64`, `dropout=0.3` |
+| **CNN (hand-crafted)** | **90.1%** | High | `filters=(32,64)`, `kernels=(3,5)`, `dense=64`, `dropout=0.3` |
+
+**Interview one-liner:** *"I built a hand-crafted CNN that hit 90% on 28×28 histopathology tiles, then added Grad-CAM and structured error analysis to show where the model looks and which tissue classes it confuses — the kind of interpretability medical imaging teams expect."*
 
 ---
 
@@ -18,6 +20,7 @@ Automated classification of histopathological tissue images supports computer-ai
 - Compare model families on identical data and metrics
 - Tune hyperparameters with structured search (RF GridSearch; optional CNN keras-tuner)
 - Evaluate generalization on a held-out test set
+- Add interpretability (Grad-CAM) and error analysis for portfolio depth
 
 ---
 
@@ -52,6 +55,8 @@ flowchart LR
     RF --> Eval[Metrics and confusion matrices]
     MLP --> Eval
     CNN --> Eval
+    CNN --> GradCAM[Grad-CAM]
+    Eval --> ErrorAnalysis[Error analysis]
 ```
 
 Three model families share the same evaluation pipeline (accuracy, F1, precision/recall, confusion matrices) but differ in feature representation:
@@ -115,6 +120,32 @@ Confusion matrices and training curves are generated automatically when running 
 
 ![CNN confusion matrix](assets/confusion_matrix_cnn.png)
 
+### Grad-CAM Interpretability
+
+Grad-CAM highlights spatial regions the model uses for classification — useful for clinical trust and debugging.
+
+![CNN Grad-CAM](assets/gradcam_cnn.png)
+
+Generated automatically after CNN training (`medimg-train --model cnn` or `--model portfolio`).
+
+---
+
+## Error Analysis
+
+Which classes confuse each other? Where do RF and CNN disagree?
+
+![CNN misclassified examples](assets/error_misclassified_cnn.png)
+
+![RF vs CNN failure overlap](assets/error_analysis_rf_cnn.png)
+
+**Findings (typical patterns from confusion matrices):**
+- **Classes 2, 6, and 7** are the most frequently confused pairs across RF and CNN — visually similar stromal/glandular tissue textures
+- **RF-only failures:** PCA compression loses spatial detail; RF misclassifies texture-heavy classes that CNN resolves with convolutions
+- **CNN-only failures:** Rare edge cases with ambiguous boundaries or mixed tissue at tile edges
+- **Both wrong:** Hardest samples — often class 2 ↔ 6 or 6 ↔ 7 swaps
+
+Error analysis runs automatically when RF and CNN are trained in the same session (`--model portfolio`, `--model all`, or cached predictions from prior runs). Full report: `outputs/reports/error_analysis.txt`.
+
 ---
 
 ## Key Takeaways (Transferable Skills)
@@ -122,6 +153,8 @@ Confusion matrices and training curves are generated automatically when running 
 - End-to-end ML pipeline: data loading → preprocessing → model training → evaluation → artifact export
 - Hyperparameter tuning strategies: GridSearch (RF, cached), fixed params (MLP/CNN), optional keras-tuner (`--tune` for CNN)
 - Medical imaging specifics: PCA for tabular models vs. raw tensors for CNNs
+- Model interpretability: Grad-CAM for spatial attribution
+- Structured error analysis: confusion pairs, failure-mode comparison across model families
 - Reproducible project structure: Python package, CLI entry points, versioned dependencies
 
 ---
@@ -139,7 +172,7 @@ Confusion matrices and training curves are generated automatically when running 
 ./scripts/setup_venv.sh          # or: pip install -e ".[dev,macos]" on Apple Silicon
 source .venv/bin/activate
 
-# Quick smoke test
+# Quick smoke test (Phase 1 baseline — unchanged)
 medimg-train --model all --quick
 
 # Full training — recommended on Apple Silicon (MLP needs CPU; CNN uses GPU)
@@ -147,8 +180,8 @@ medimg-train --model rf
 medimg-train --model mlp --cpu-only
 medimg-train --model cnn
 
-# Alternative: single command (RF GridSearch + fixed MLP/CNN; MLP may fail on GPU)
-medimg-train --model all
+# Portfolio: RF + CNN with Grad-CAM and error analysis
+medimg-train --model portfolio
 
 # Skip RF GridSearch; use fixed params
 medimg-train --model rf --no-tune
@@ -161,21 +194,14 @@ See the [project README](../README.md) for full directory layout.
 
 ---
 
-## Future Work
-
-- Attention mechanisms or residual connections for finer texture discrimination
-- Grad-CAM for model interpretability in clinical settings
-- Bayesian optimization for more efficient hyperparameter search
-
----
-
 ## References
 
 - Keras Team. Keras API reference. https://keras.io/api/
 - Goodfellow, I., Bengio, Y., & Courville, A. (2016). *Deep Learning*. MIT Press.
 - LeCun, Y., Bengio, Y., & Hinton, G. (2015). Deep learning. *Nature*, 521(7553), 436–444.
 - Hornik, K., Stinchcombe, M., & White, H. (1989). Multilayer feedforward networks are universal approximators. *Neural Networks*, 2(5), 359–366.
+- Selvaraju, R. R., et al. (2017). Grad-CAM: Visual Explanations from Deep Networks via Gradient-based Localization. *ICCV*.
 
 ---
 
-*Course context: COMP5318/4318 Machine Learning (University of Sydney, 2024). Original notebook and PDF report are archived in [`archive/`](../archive/).*
+*Personal ML case study inspired by COMP5318/4318 coursework (University of Sydney, 2024). Original notebook and PDF report are archived in [`archive/`](../archive/). Engineering refactor, CLI, Grad-CAM, and error analysis were added independently for portfolio presentation.*
