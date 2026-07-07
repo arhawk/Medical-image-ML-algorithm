@@ -24,6 +24,16 @@ class DatasetBundle:
     pca: PCA
     num_classes: int
 
+    def merged_pca_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        X = np.concatenate([self.X_train_pca, self.X_valid_pca])
+        y = np.concatenate([self.y_train, self.y_valid])
+        return X, y
+
+    def merged_image_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        X = np.concatenate([self.X_train, self.X_valid])
+        y = np.concatenate([self.y_train, self.y_valid])
+        return X, y
+
 
 def load_arrays(data_dir: str | Path | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     root = resolve_data_dir(data_dir)

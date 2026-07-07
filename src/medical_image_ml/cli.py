@@ -19,11 +19,21 @@ from medical_image_ml.evaluate import (
 from medical_image_ml.models import build_cnn, build_mlp, build_random_forest
 from medical_image_ml.paths import ensure_dir, project_path, resolve_data_dir, resolve_output_dir, save_text
 from medical_image_ml.preprocessing import prepare_dataset
-from medical_image_ml.train import TrainingConfig, fit_keras_model, fit_random_forest, set_seeds
+from medical_image_ml.train import (
+    configure_tensorflow_runtime,
+    resolve_batch_size,
+    TrainingConfig,
+    fit_keras_model,
+    fit_keras_model_final,
+    fit_random_forest,
+    predict_keras_model,
+    set_seeds,
+)
 from medical_image_ml.tuning import (
     BEST_CNN_PARAMS,
     BEST_MLP_PARAMS,
     BEST_RF_PARAMS,
+    rf_cache_path,
     tune_cnn,
     tune_random_forest,
 )
@@ -37,34 +47,68 @@ def _save_metrics(output_dir: Path, model_name: str, metrics: dict) -> None:
     save_text(output_dir / "metrics" / f"{model_name}.json", json.dumps(metrics, indent=2))
 
 
+def _config_for_model(
+    base: TrainingConfig,
+    model_name: str,
+    quick: bool,
+    default_epochs: int,
+) -> TrainingConfig:
+    if quick:
+        epochs = 5
+    elif model_name == "cnn":
+        epochs = 40
+    elif model_name == "mlp":
+        epochs = 30
+    else:
+        epochs = default_epochs
+    return TrainingConfig(
+        batch_size=base.batch_size,
+        epochs=epochs,
+        random_state=base.random_state,
+        patience=base.patience,
+        reduce_lr_patience=base.reduce_lr_patience,
+    )
+
+
 def train_rf(
     dataset,
     output_dir: Path,
     config: TrainingConfig,
     quick: bool = False,
     tune: bool = True,
+    retune_rf: bool = False,
 ) -> dict:
     start = time.time()
+    cache_file = rf_cache_path(output_dir)
+
     if tune:
         model, tuning_info = tune_random_forest(
             dataset.X_train_pca,
             dataset.y_train,
             random_state=config.random_state,
             quick=quick,
+            cache_path=cache_file,
+            reuse_cache=True,
+            retune=retune_rf,
         )
         params = tuning_info["best_params"]
+        metrics_extra = {
+            "best_cv_score": tuning_info.get("best_cv_score"),
+            "from_cache": tuning_info.get("from_cache", False),
+        }
     else:
         model = build_random_forest(**BEST_RF_PARAMS, random_state=config.random_state)
         fit_random_forest(model, dataset.X_train_pca, dataset.y_train)
         params = BEST_RF_PARAMS
+        metrics_extra = {"from_cache": False}
 
-    X_final = np.concatenate([dataset.X_train_pca, dataset.X_valid_pca])
-    y_final = np.concatenate([dataset.y_train, dataset.y_valid])
+    X_final, y_final = dataset.merged_pca_arrays()
     fit_random_forest(model, X_final, y_final)
 
     y_pred = model.predict(dataset.X_test_pca)
     metrics = evaluate_classification(dataset.y_test, y_pred, title="Random Forest")
     metrics["params"] = params
+    metrics.update(metrics_extra)
     metrics["train_seconds"] = round(time.time() - start, 2)
 
     plot_confusion_matrix(
@@ -105,7 +149,18 @@ def train_mlp(
         config,
     )
 
-    y_pred = np.argmax(model.predict(dataset.X_test_pca, verbose=0), axis=1)
+    final_model = build_mlp(
+        input_dim=dataset.X_train_pca.shape[1],
+        num_classes=dataset.num_classes,
+        **params,
+    )
+    X_final, y_final = dataset.merged_pca_arrays()
+    fit_keras_model_final(final_model, X_final, y_final, config)
+
+    y_pred = np.argmax(
+        predict_keras_model(final_model, dataset.X_test_pca, batch_size=config.batch_size),
+        axis=1,
+    )
     metrics = evaluate_classification(dataset.y_test, y_pred, title="MLP")
     metrics["params"] = params
     metrics["train_seconds"] = round(time.time() - start, 2)
@@ -138,7 +193,7 @@ def train_cnn(
     input_shape = dataset.X_train.shape[1:]
 
     if tune:
-        model, tuning_info = tune_cnn(
+        _, tuning_info = tune_cnn(
             dataset.X_train,
             dataset.y_train,
             dataset.X_valid,
@@ -150,6 +205,14 @@ def train_cnn(
             max_trials=3 if quick else 8,
         )
         params = tuning_info["best_hyperparameters"]
+        model = build_cnn(
+            input_shape=input_shape,
+            num_classes=dataset.num_classes,
+            filters=(params.get("filter_1"), params.get("filter_2")),
+            kernels=(params.get("kernel_1"), params.get("kernel_2")),
+            dense_units=32,
+            learning_rate=params.get("learning_rate", 1e-3),
+        )
     else:
         params = BEST_CNN_PARAMS.copy()
         if quick:
@@ -170,7 +233,30 @@ def train_cnn(
         config,
     )
 
-    y_pred = np.argmax(model.predict(dataset.X_test, verbose=0), axis=1)
+    if tune:
+        final_params = params
+        final_model = build_cnn(
+            input_shape=input_shape,
+            num_classes=dataset.num_classes,
+            filters=(final_params.get("filter_1"), final_params.get("filter_2")),
+            kernels=(final_params.get("kernel_1"), final_params.get("kernel_2")),
+            dense_units=32,
+            learning_rate=final_params.get("learning_rate", 1e-3),
+        )
+    else:
+        final_model = build_cnn(
+            input_shape=input_shape,
+            num_classes=dataset.num_classes,
+            **params,
+        )
+
+    X_final, y_final = dataset.merged_image_arrays()
+    fit_keras_model_final(final_model, X_final, y_final, config)
+
+    y_pred = np.argmax(
+        predict_keras_model(final_model, dataset.X_test, batch_size=config.batch_size),
+        axis=1,
+    )
     metrics = evaluate_classification(dataset.y_test, y_pred, title="CNN")
     metrics["params"] = params
     metrics["train_seconds"] = round(time.time() - start, 2)
@@ -191,7 +277,7 @@ def train_cnn(
     _save_metrics(output_dir, "cnn", metrics)
 
     model_path = ensure_dir(output_dir / "models") / "cnn.keras"
-    model.save(model_path)
+    final_model.save(model_path)
     metrics["model_path"] = str(model_path)
     return metrics
 
@@ -235,29 +321,66 @@ def generate_dataset_figures(dataset, output_dir: Path) -> None:
 
 
 def run_training(args: argparse.Namespace) -> list[dict]:
+    runtime_info = configure_tensorflow_runtime(cpu_only=args.cpu_only)
     set_seeds(args.seed)
     data_dir = resolve_data_dir(args.data_dir)
     output_dir = ensure_dir(resolve_output_dir(args.output_dir))
 
-    config = TrainingConfig(
-        batch_size=args.batch_size,
-        epochs=5 if args.quick else args.epochs,
+    batch_size = resolve_batch_size(args.batch_size, gpu_count=int(runtime_info["gpu_count"]))
+    base_config = TrainingConfig(
+        batch_size=batch_size,
+        epochs=args.epochs,
         random_state=args.seed,
     )
 
     dataset = prepare_dataset(data_dir=data_dir, random_state=args.seed)
     generate_dataset_figures(dataset, output_dir)
+    print(
+        "Runtime:",
+        f"{runtime_info['cpu_threads']} CPU threads,",
+        f"{runtime_info['gpu_count']} GPU(s),",
+        f"batch_size={batch_size},",
+        f"mixed_precision={runtime_info['mixed_precision']}",
+    )
+    if runtime_info["gpu_count"] > 0 and runtime_info.get("gpu_name"):
+        print(f"  GPU device: {runtime_info['gpu_name']}")
+    if runtime_info["gpu_count"] == 0:
+        print(
+            "Tip: install Apple GPU acceleration with "
+            "`pip install tensorflow-metal` (or `pip install -e \".[macos]\"`)."
+        )
+    else:
+        print("  Keras models (MLP/CNN) train on GPU via tensorflow-metal. RF uses CPU (scikit-learn).")
 
-    runners = {
-        "rf": lambda: train_rf(dataset, output_dir, config, quick=args.quick, tune=not args.no_tune),
-        "mlp": lambda: train_mlp(dataset, output_dir, config, quick=args.quick),
-        "cnn": lambda: train_cnn(
+    def run_rf():
+        cfg = _config_for_model(base_config, "rf", args.quick, args.epochs)
+        return train_rf(
             dataset,
             output_dir,
-            config,
+            cfg,
+            quick=args.quick,
+            tune=not args.no_tune,
+            retune_rf=args.retune_rf,
+        )
+
+    def run_mlp():
+        cfg = _config_for_model(base_config, "mlp", args.quick, args.epochs)
+        return train_mlp(dataset, output_dir, cfg, quick=args.quick)
+
+    def run_cnn():
+        cfg = _config_for_model(base_config, "cnn", args.quick, args.epochs)
+        return train_cnn(
+            dataset,
+            output_dir,
+            cfg,
             quick=args.quick,
             tune=args.tune,
-        ),
+        )
+
+    runners = {
+        "rf": run_rf,
+        "mlp": run_mlp,
+        "cnn": run_cnn,
     }
 
     models = ["rf", "mlp", "cnn"] if args.model == "all" else [args.model]
@@ -281,11 +404,6 @@ def run_training(args: argparse.Namespace) -> list[dict]:
     if len(results) > 1:
         comparison_path = _figures_dir(output_dir) / "model_comparison.png"
         plot_model_comparison(results, output_path=comparison_path)
-        docs_assets = ensure_dir(project_path("docs", "assets"))
-        if comparison_path.exists():
-            (docs_assets / "model_comparison.png").write_bytes(comparison_path.read_bytes())
-        for item in results:
-            item["model"] = item["model"]
         save_text(output_dir / "metrics" / "comparison.json", json.dumps(results, indent=2))
 
     _sync_showcase_assets(output_dir)
@@ -305,8 +423,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", default=None, help="Path to Assignment2Data directory.")
     parser.add_argument("--output-dir", default=None, help="Directory for artifacts.")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--epochs", type=int, default=30, help="Default epochs (CNN uses 40, MLP 30 when not --quick).")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="Mini-batch size for Keras (0 = auto: 256 with GPU, 128 on 8+ CPU cores, else 64).",
+    )
+    parser.add_argument(
+        "--cpu-only",
+        action="store_true",
+        help="Disable GPU and run TensorFlow on CPU only.",
+    )
     parser.add_argument(
         "--quick",
         action="store_true",
@@ -321,6 +449,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-tune",
         action="store_true",
         help="Skip GridSearch for RF and use best-known hyperparameters.",
+    )
+    parser.add_argument(
+        "--retune-rf",
+        action="store_true",
+        help="Force RF GridSearch even when outputs/tuning/rf/best_params.json exists.",
     )
     return parser
 

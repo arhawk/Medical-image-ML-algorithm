@@ -35,7 +35,7 @@ def build_mlp(
     for _ in range(hidden_layers):
         model.add(keras.layers.Dense(units, activation=activation))
         model.add(keras.layers.Dropout(rate=dropout))
-    model.add(keras.layers.Dense(num_classes, activation="softmax"))
+    model.add(keras.layers.Dense(num_classes, activation="softmax", dtype="float32"))
     model.compile(
         optimizer=keras.optimizers.SGD(learning_rate=learning_rate),
         loss="sparse_categorical_crossentropy",
@@ -80,7 +80,7 @@ def build_cnn(
             layers.GlobalAveragePooling2D(),
             layers.Dense(dense_units, activation="relu", kernel_regularizer=l2_reg),
             layers.Dropout(dropout_dense),
-            layers.Dense(num_classes, activation="softmax"),
+            layers.Dense(num_classes, activation="softmax", dtype="float32"),
         ]
     )
     model.compile(

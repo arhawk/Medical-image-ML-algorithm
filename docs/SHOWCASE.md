@@ -1,12 +1,12 @@
 # Medical Image Classification — Portfolio Showcase
 
-> **Histopathology image classification** comparing Random Forest, MLP, and CNN on a 9-class medical imaging dataset. Best model (CNN) achieves **93% test accuracy**.
+> **Histopathology image classification** comparing Random Forest, MLP, and CNN on a 9-class medical imaging dataset. Best model (CNN) achieves **90.1% test accuracy** (reproduced via CLI full training).
 
 | Model | Test Accuracy | Training Cost | Best Hyperparameters |
 |-------|---------------|---------------|----------------------|
-| Random Forest (PCA) | 64% | Low | `n_estimators=250`, `max_depth=20`, `max_features=sqrt` |
-| MLP (PCA) | 69% | Medium | `units=256`, `relu`, `dropout=0.2`, `lr=0.1` |
-| **CNN** | **93%** | High | `filters=(32,64)`, `kernels=(3,5)`, `dense=64`, `dropout=0.3` |
+| Random Forest (PCA) | 65.7% | Low | `n_estimators=250`, `max_depth=None`, `max_features=sqrt` |
+| MLP (PCA) | 69.3% | Medium | `units=256`, `relu`, `dropout=0.2`, `lr=0.1` |
+| **CNN** | **90.1%** | High | `filters=(32,64)`, `kernels=(3,5)`, `dense=64`, `dropout=0.3` |
 
 ---
 
@@ -70,7 +70,7 @@ Three model families share the same evaluation pipeline (accuracy, F1, precision
 
 - **Theory:** Bagged ensemble of decision trees with random feature subsets at each split
 - **Tuning:** `GridSearchCV` with 3-fold stratified CV over `n_estimators`, `max_depth`, `max_features`
-- **Best config:** 250 trees, depth 20, `sqrt` features → 64.4% CV accuracy
+- **Best config:** 250 trees, unlimited depth, `sqrt` features → 65.6% CV accuracy
 - **Strengths:** Fast training, feature importance, robust baseline
 - **Limitations:** Struggles with visually similar tissue classes after PCA compression
 
@@ -79,14 +79,14 @@ Three model families share the same evaluation pipeline (accuracy, F1, precision
 - **Architecture:** 2 hidden layers (256 units, ReLU) + dropout 0.2 on PCA features
 - **Optimizer:** SGD with learning rate 0.1
 - **Tuning:** Greedy search over units, activation, dropout, learning rate
-- **Result:** 68.6% test accuracy — moderate performance, lacks spatial awareness
+- **Result:** 69.3% test accuracy — moderate performance, lacks spatial awareness
 
 ### CNN (Convolutional Neural Network)
 
 - **Architecture:** Conv2D(32,3) → Conv2D(64,5) → MaxPool → GlobalAvgPool → Dense(64) → Softmax
 - **Regularization:** L2 (1e-4), BatchNorm, Dropout (0.3), EarlyStopping, ReduceLROnPlateau
 - **Tuning:** Staged greedy / keras-tuner search over filters, kernels, dropout, learning rate, dense units
-- **Result:** **93% test accuracy** — best at capturing spatial patterns in tissue images
+- **Result:** **90.1% test accuracy** — best at capturing spatial patterns in tissue images
 
 ---
 
@@ -96,9 +96,9 @@ Three model families share the same evaluation pipeline (accuracy, F1, precision
 
 | Model | Accuracy | F1 (weighted) | Interpretability | Speed |
 |-------|----------|---------------|------------------|-------|
-| PCA + RF | 0.64 | 0.61 | High | Fast |
-| PCA + MLP | 0.69 | — | Medium | Medium |
-| **CNN** | **0.93** | — | Low | Slow |
+| PCA + RF | 0.657 | 0.649 | High | Fast |
+| PCA + MLP | 0.693 | 0.685 | Medium | Medium |
+| **CNN** | **0.901** | **0.901** | Low | Slow |
 
 **Key findings:**
 - CNN significantly outperforms classical and fully-connected approaches on raw image tensors
