@@ -1,10 +1,10 @@
 # Medical Image Classification — Portfolio Showcase
 
-> **Histopathology image classification** comparing Random Forest, MLP, and CNN on a 9-class medical imaging dataset. Best model (CNN) achieves **90.1% test accuracy** (reproduced via CLI full training).
+> **Histopathology image classification** comparing Random Forest, MLP, and CNN on a 9-class medical imaging dataset. Best model (CNN) achieves **90.1% test accuracy** (CLI baseline: RF GridSearch, MLP `--cpu-only`, CNN on GPU).
 
 | Model | Test Accuracy | Training Cost | Best Hyperparameters |
 |-------|---------------|---------------|----------------------|
-| Random Forest (PCA) | 65.7% | Low | `n_estimators=250`, `max_depth=None`, `max_features=sqrt` |
+| Random Forest (PCA) | 65.7% | Low | `n_estimators=250`, `max_depth=20`, `max_features=sqrt` (GridSearch default; `--no-tune` fallback) |
 | MLP (PCA) | 69.3% | Medium | `units=256`, `relu`, `dropout=0.2`, `lr=0.1` |
 | **CNN** | **90.1%** | High | `filters=(32,64)`, `kernels=(3,5)`, `dense=64`, `dropout=0.3` |
 
@@ -16,7 +16,7 @@ Automated classification of histopathological tissue images supports computer-ai
 
 **Goals:**
 - Compare model families on identical data and metrics
-- Tune hyperparameters with structured search (GridSearch, greedy / keras-tuner)
+- Tune hyperparameters with structured search (RF GridSearch; optional CNN keras-tuner)
 - Evaluate generalization on a held-out test set
 
 ---
@@ -69,8 +69,8 @@ Three model families share the same evaluation pipeline (accuracy, F1, precision
 ### Random Forest
 
 - **Theory:** Bagged ensemble of decision trees with random feature subsets at each split
-- **Tuning:** `GridSearchCV` with 3-fold stratified CV over `n_estimators`, `max_depth`, `max_features`
-- **Best config:** 250 trees, unlimited depth, `sqrt` features → 65.6% CV accuracy
+- **Tuning:** `GridSearchCV` with 3-fold stratified CV over `n_estimators`, `max_depth`, `max_features` (cached to `outputs/tuning/rf/best_params.json`)
+- **Fallback (`--no-tune`):** 250 trees, `max_depth=20`, `sqrt` features
 - **Strengths:** Fast training, feature importance, robust baseline
 - **Limitations:** Struggles with visually similar tissue classes after PCA compression
 
@@ -78,15 +78,16 @@ Three model families share the same evaluation pipeline (accuracy, F1, precision
 
 - **Architecture:** 2 hidden layers (256 units, ReLU) + dropout 0.2 on PCA features
 - **Optimizer:** SGD with learning rate 0.1
-- **Tuning:** Greedy search over units, activation, dropout, learning rate
+- **Tuning:** Fixed best-known params from notebook search (CLI has no MLP tuner)
 - **Result:** 69.3% test accuracy — moderate performance, lacks spatial awareness
+- **Apple Silicon:** run with `--cpu-only`; GPU + mixed precision breaks SGD at `lr=0.1`
 
 ### CNN (Convolutional Neural Network)
 
 - **Architecture:** Conv2D(32,3) → Conv2D(64,5) → MaxPool → GlobalAvgPool → Dense(64) → Softmax
 - **Regularization:** L2 (1e-4), BatchNorm, Dropout (0.3), EarlyStopping, ReduceLROnPlateau
-- **Tuning:** Staged greedy / keras-tuner search over filters, kernels, dropout, learning rate, dense units
-- **Result:** **90.1% test accuracy** — best at capturing spatial patterns in tissue images
+- **Tuning:** Fixed `BEST_CNN_PARAMS` by default; optional `--tune` runs keras-tuner (not used for reported 90.1%)
+- **Result:** **90.1% test accuracy** — best at capturing spatial patterns in tissue images (GPU recommended)
 
 ---
 
@@ -104,7 +105,7 @@ Three model families share the same evaluation pipeline (accuracy, F1, precision
 - CNN significantly outperforms classical and fully-connected approaches on raw image tensors
 - RF is a useful interpretable baseline but confuses visually similar classes (2, 6, 7)
 - MLP bridges the gap but cannot match CNN without spatial feature learning
-- Greedy hyperparameter search was practical given dataset size and CNN training cost
+- RF GridSearch is cached; MLP/CNN use fixed params unless `--tune` (CNN only)
 
 Confusion matrices and training curves are generated automatically when running the CLI (see `outputs/figures/`).
 
@@ -119,7 +120,7 @@ Confusion matrices and training curves are generated automatically when running 
 ## Key Takeaways (Transferable Skills)
 
 - End-to-end ML pipeline: data loading → preprocessing → model training → evaluation → artifact export
-- Hyperparameter tuning strategies: grid search (RF), greedy search (MLP/CNN), keras-tuner (CNN)
+- Hyperparameter tuning strategies: GridSearch (RF, cached), fixed params (MLP/CNN), optional keras-tuner (`--tune` for CNN)
 - Medical imaging specifics: PCA for tabular models vs. raw tensors for CNNs
 - Reproducible project structure: Python package, CLI entry points, versioned dependencies
 
@@ -135,20 +136,25 @@ Confusion matrices and training curves are generated automatically when running 
 
 ```bash
 # Setup (requires Python 3.10–3.12 for TensorFlow)
-/opt/homebrew/opt/python@3.12/bin/python3.12 -m venv .venv
+./scripts/setup_venv.sh          # or: pip install -e ".[dev,macos]" on Apple Silicon
 source .venv/bin/activate
-pip install -e ".[dev]"
 
 # Quick smoke test
 medimg-train --model all --quick
 
-# Full training (best-known hyperparameters)
+# Full training — recommended on Apple Silicon (MLP needs CPU; CNN uses GPU)
+medimg-train --model rf
+medimg-train --model mlp --cpu-only
+medimg-train --model cnn
+
+# Alternative: single command (RF GridSearch + fixed MLP/CNN; MLP may fail on GPU)
 medimg-train --model all
 
-# Train individual models
-medimg-train --model cnn
+# Skip RF GridSearch; use fixed params
 medimg-train --model rf --no-tune
-medimg-train --model cnn --tune   # enable keras-tuner search
+
+# Optional keras-tuner search (different architecture than baseline 90.1% config)
+medimg-train --model cnn --tune
 ```
 
 See the [project README](../README.md) for full directory layout.
